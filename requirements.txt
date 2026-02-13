@@ -1,0 +1,13 @@
+langgraph
+langchain
+langchain-community
+fastembed
+semanticscholar
+arxiv
+networkx
+numpy
+streamlit
+google-generativeai
+python-dotenv
+scikit-learn
+pyvis
