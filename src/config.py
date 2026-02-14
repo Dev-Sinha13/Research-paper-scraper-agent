@@ -20,4 +20,4 @@ SIMILARITY_THRESHOLD = 0.5  # Cosine similarity threshold for relevance
 MAX_DEPTH = 2  # How many hops from the original paper
 
 # API Config
-SEMANTIC_SCHOLAR_RATE_LIMIT = 3.0  # Seconds between requests (avoid 429 rate limit)
+SEMANTIC_SCHOLAR_RATE_LIMIT = 1.0  # Seconds between requests (S2 public API allows ~100 req/5min)

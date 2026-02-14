@@ -60,15 +60,8 @@ class ResearchGraph:
         
         summary = self.rag.summarize_papers(paper_list, query)
         
-        # We can store summary in state, but ResearchState needs a field for it?
-        # Let's just return it as a "global summary" maybe?
-        # For now, we update the papers with individual summaries if needed, 
-        # or just return a key in the state.
-        
         return {"summary": summary}
 
-
-    # --- Node Implementations ---
 
     def search_seeds(self, state: ResearchState) -> Dict:
         """Initial search for seed papers."""
@@ -83,32 +76,66 @@ class ResearchGraph:
         # Generate query vector if not present
         if not state.get('query_vector'):
             state['query_vector'] = self.embedder.embed(query)
-            
-        # Fetch seeds
+        
+        query_vector = state['query_vector']
+        if not query_vector:
+            raise RuntimeError(
+                "Embedding model failed to produce a query vector. "
+                "Check that the embedding model loaded correctly."
+            )
+
+        # Fetch seeds — this now raises on total failure instead of silently returning []
         raw_papers = self.fetcher.search(query, limit=MAX_SEARCH_RESULTS)
+        
+        if not raw_papers:
+            logger.warning("Search returned 0 papers. The query may be too specific or the API returned no results.")
         
         # Convert to Paper objects
         new_papers = {}
+        skipped = 0
         for p in raw_papers:
-            if not p['abstract']: continue
+            abstract = p.get('abstract', '')
             
-            # Embed paper abstract
-            vec = self.embedder.embed(p['abstract'])
-            sim = self.embedder.similarity(state['query_vector'], vec)
+            # If no abstract, still keep the paper but give it a low relevance score
+            if not abstract:
+                skipped += 1
+                paper_obj: Paper = {
+                    'id': p['id'],
+                    'title': p['title'],
+                    'abstract': "",
+                    'authors': p.get('authors', []),
+                    'year': p.get('year'),
+                    'citation_count': p.get('citationCount', 0),
+                    'url': p.get('url', ''),
+                    'vector': [],
+                    'relevance_score': 0.1,  # Low default score
+                    'summary': ""
+                }
+                new_papers[p['id']] = paper_obj
+                continue
+            
+            # Embed paper abstract and score relevance
+            vec = self.embedder.embed(abstract)
+            sim = self.embedder.similarity(query_vector, vec)
             
             paper_obj: Paper = {
                 'id': p['id'],
                 'title': p['title'],
-                'abstract': p['abstract'],
-                'authors': p['authors'],
-                'year': p['year'],
-                'citation_count': p['citationCount'],
-                'url': p['url'],
+                'abstract': abstract,
+                'authors': p.get('authors', []),
+                'year': p.get('year'),
+                'citation_count': p.get('citationCount', 0),
+                'url': p.get('url', ''),
                 'vector': vec,
                 'relevance_score': sim,
                 'summary': ""
             }
             new_papers[p['id']] = paper_obj
+        
+        logger.info(
+            f"Seed search produced {len(new_papers)} papers "
+            f"({skipped} without abstracts)."
+        )
             
         return {
             "papers": new_papers,
@@ -124,6 +151,7 @@ class ResearchGraph:
         queue = state.get('queue', [])
         visited = state.get('visited_ids', set())
         papers = state.get('papers', {})
+        query_vector = state.get('query_vector', [])
         
         # Get next paper from queue that hasn't been visited
         current_id = None
@@ -137,6 +165,7 @@ class ResearchGraph:
             
         # Mark as visited
         visited.add(current_id)
+        logger.info(f"Expanding paper: {papers.get(current_id, {}).get('title', current_id)}")
         
         # Fetch details (references)
         details = self.fetcher.get_details(current_id)
@@ -149,21 +178,38 @@ class ResearchGraph:
         
         new_papers = {}
         for p in new_raw_papers:
-            if p['id'] in papers: continue # Already have it
-            if not p['abstract']: continue
+            if p['id'] in papers: continue  # Already have it
+            abstract = p.get('abstract', '')
+            
+            if not abstract:
+                # Keep paper with low score
+                paper_obj: Paper = {
+                    'id': p['id'],
+                    'title': p.get('title', ''),
+                    'abstract': "",
+                    'authors': p.get('authors', []),
+                    'year': p.get('year'),
+                    'citation_count': p.get('citationCount', 0),
+                    'url': p.get('url', ''),
+                    'vector': [],
+                    'relevance_score': 0.1,
+                    'summary': ""
+                }
+                new_papers[p['id']] = paper_obj
+                continue
             
             # Embed
-            vec = self.embedder.embed(p['abstract'])
-            sim = self.embedder.similarity(state['query_vector'], vec)
+            vec = self.embedder.embed(abstract)
+            sim = self.embedder.similarity(query_vector, vec)
             
             paper_obj: Paper = {
                 'id': p['id'],
-                'title': p['title'],
-                'abstract': p['abstract'],
-                'authors': p['authors'],
-                'year': p['year'],
-                'citation_count': p['citationCount'],
-                'url': p['url'],
+                'title': p.get('title', ''),
+                'abstract': abstract,
+                'authors': p.get('authors', []),
+                'year': p.get('year'),
+                'citation_count': p.get('citationCount', 0),
+                'url': p.get('url', ''),
                 'vector': vec,
                 'relevance_score': sim,
                 'summary': ""
@@ -175,6 +221,8 @@ class ResearchGraph:
         
         # Update queue (add new papers)
         new_queue = list(queue) + list(new_papers.keys())
+        
+        logger.info(f"Expand added {len(new_papers)} new papers.")
         
         return {
             "papers": papers,
@@ -189,12 +237,12 @@ class ResearchGraph:
         papers = state['papers']
         queue = state['queue']
         
+        # Remove papers from queue that aren't in our papers dict (safety check)
+        queue = [pid for pid in queue if pid in papers]
+        
         # Sort queue by relevance score of the papers
         # High relevance first
-        queue.sort(key=lambda pid: papers[pid]['relevance_score'], reverse=True)
-        
-        # Prune: Remove low relevance from queue (but keep in graph?)
-        # For now, just sort so we expand the best ones first.
+        queue.sort(key=lambda pid: papers[pid].get('relevance_score', 0), reverse=True)
         
         return {"queue": queue}
 
@@ -202,7 +250,7 @@ class ResearchGraph:
         """Decide whether to stop or continue."""
         # Check timeout
         start_time = state.get('start_time')
-        max_duration = state.get('max_duration', 60) # Default 60s
+        max_duration = state.get('max_duration', 120)  # Increased default to 120s
         if start_time and (time.time() - start_time > max_duration):
             logger.info("Max duration reached. Stopping.")
             return "stop"
@@ -212,6 +260,4 @@ class ResearchGraph:
         if not state['queue']:
             return "stop"
         
-        # Check if we have enough "High Relevance" papers?
-        # For now, just depth + queue check
         return "continue"

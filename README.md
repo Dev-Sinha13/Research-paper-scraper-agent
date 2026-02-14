@@ -8,7 +8,7 @@ An AI-powered agentic system that explores research papers, builds knowledge gra
 
 ## 🚀 Features
 
-- **Automated Research**: Scrapes Semantic Scholar and Arxiv to find papers relevant to your query.
+- **Automated Research**: Scrapes Semantic Scholar to find papers relevant to your query.
 - **Knowledge Graph Construction**: Visualizes connections between papers based on citations and relevance.
 - **Relevance Scoring**: Uses embeddings (FastEmbed) to score papers based on similarity to your research topic.
 - **Interactive UI**: Explore the graph and paper details through a modern Streamlit interface.
